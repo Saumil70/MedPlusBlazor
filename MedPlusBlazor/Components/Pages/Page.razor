@@ -1,0 +1,178 @@
+﻿@page "/page"
+@using MedPlusBlazor.Models
+@inject HttpClient HttpClient
+@using System.Text.Json
+
+@code {
+    private List<BannerModel> items = new List<BannerModel>();
+    private List<BannerModel> allItems = new List<BannerModel>();
+    private string searchTerm = string.Empty;
+    private bool isLoading = false;
+    private string contentUrl = "https://localhost:44384/umbraco/delivery/api/v2/content";
+    private string searchUrl = "https://localhost:44384/api/Search/SearchData?searchTerm={0}";
+
+    protected override async Task OnInitializedAsync()
+    {
+        isLoading = true;
+        await LoadItemsAsync();
+    }
+
+    private async Task LoadItemsAsync()
+    {
+        await FetchItemsAsync(contentUrl);
+        isLoading = false;
+    }
+
+    private async Task FetchItemsAsync(string url)
+    {
+        isLoading = true;
+        try
+        {
+            var response = await HttpClient.GetAsync($"{url}");
+            response.EnsureSuccessStatusCode();
+
+            var contentString = await response.Content.ReadAsStringAsync();
+
+            if (!string.IsNullOrEmpty(contentString))
+            {
+                if (url == contentUrl)
+                {
+                    allItems = ParseContent(contentString);
+                    items = new List<BannerModel>(allItems);
+                }
+                else
+                {
+                    var searchResult = JsonSerializer.Deserialize<SearchModel>(contentString, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    if (searchResult != null && searchResult.Success)
+                    {
+                        allItems = searchResult.Result.Select(r => new BannerModel
+                            {
+                                Properties = new Properties
+                                {
+                                    Heading = r.Heading.FirstOrDefault() ?? string.Empty,
+                                    Description = r.Description.FirstOrDefault() ?? string.Empty,
+                                }
+                            }).OrderBy(b => b.Properties.Heading).ToList();
+                        items = new List<BannerModel>(allItems);
+                    }
+                }
+            }
+        }
+        catch (HttpRequestException httpEx)
+        {
+            Console.WriteLine($"HTTP error occurred: {httpEx.Message}");
+            items = new List<BannerModel>();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"An error occurred: {ex.Message}");
+            items = new List<BannerModel>();
+        }
+        isLoading = false;
+    }
+
+    private List<BannerModel> ParseContent(string contentString)
+    {
+        var itemList = new List<BannerModel>();
+
+        using (var document = JsonDocument.Parse(contentString))
+        {
+            var root = document.RootElement;
+            var itemsArray = root.GetProperty("items");
+
+            foreach (var element in itemsArray.EnumerateArray())
+            {
+                // dont want to get banner list because it is null
+                if (element.TryGetProperty("contentType", out var contentType) && contentType.GetString() != "bannerList")
+                {
+                    var item = new BannerModel
+                    {
+                        Properties = new Properties
+                        {
+                            Heading = element.GetProperty("properties").TryGetProperty("heading", out var heading) ? heading.GetString() ?? string.Empty : string.Empty,
+                            Description = element.GetProperty("properties").TryGetProperty("description", out var description) ? description.GetString() ?? string.Empty : string.Empty,
+                        }
+                    };
+
+                    itemList.Add(item);
+                }
+            }
+        }
+
+        return itemList;
+    }
+
+    private async Task SearchItems()
+    {
+        isLoading = true;
+
+        var encodedSearchTerm = Uri.EscapeDataString(searchTerm);
+        var searchUrlWithTerm = string.Format(searchUrl, encodedSearchTerm);
+
+        await FetchItemsAsync(searchUrlWithTerm);
+
+        isLoading = false;
+    }
+
+    private async Task OnSearchTermChanged(ChangeEventArgs e)
+    {
+        searchTerm = e.Value.ToString();
+        if (string.IsNullOrEmpty(searchTerm))
+        {
+            await FetchItemsAsync(contentUrl);
+        }
+    }
+}
+
+<style>
+    .hidden-until-loaded {
+        display: none;
+    }
+</style>
+
+<script src="https://cdn.tailwindcss.com" onload="document.getElementById('content').classList.remove('hidden-until-loaded')"></script>
+
+<PageTitle>Home</PageTitle>
+
+<div id="content" class="hidden-until-loaded">
+    <div class="p-2 pb-4">
+        <input @bind="searchTerm" @oninput="OnSearchTermChanged" placeholder="Search..." class="border-2 border-gray-400 rounded p-2 hover:border-gray-700" />
+        <button @onclick="SearchItems" class="bg-gray-700 text-white rounded p-2 ml-2 hover:bg-black">Search</button>
+    </div>
+
+    @if (isLoading)
+    {
+        <p>Loading...</p>
+    }
+    else if (items == null)
+    {
+        <p>Loading...</p>
+    }
+    else if (!items.Any())
+    {
+        <p>No content available</p>
+    }
+    else
+    {
+        <div class="flex flex-wrap -mx-2">
+            @foreach (var item in items)
+            {
+                <div class="w-full sm:w-1/2 md:w-1/3 p-2">
+                    <div class="bg-white shadow-lg rounded-lg overflow-hidden">
+                        <div class="p-4">
+                            @if (!string.IsNullOrEmpty(item.Properties.Heading))
+                            {
+                                <h4 class="text-xl font-bold mb-2">@item.Properties.Heading</h4>
+                            }
+
+                            @if (!string.IsNullOrEmpty(item.Properties.Description))
+                            {
+                                <h5 class="text-gray-700">@item.Properties.Description</h5>
+                            }
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+</div>
